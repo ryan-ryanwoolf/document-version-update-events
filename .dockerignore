@@ -1,0 +1,8 @@
+target/
+.git/
+.idea/
+.vscode/
+*.iml
+.cursor/
+agent-tools/
+agent-transcripts/

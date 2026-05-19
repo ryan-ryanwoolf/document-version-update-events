@@ -1,0 +1,2 @@
+ALTER TABLE pending_revision_event
+    ADD COLUMN IF NOT EXISTS event_type VARCHAR(20) NOT NULL DEFAULT 'UPDATE';
