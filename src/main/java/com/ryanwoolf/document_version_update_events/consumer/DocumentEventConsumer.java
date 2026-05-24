@@ -4,12 +4,14 @@ import com.ryanwoolf.document_version_update_events.config.DocumentProcessingStr
 import com.ryanwoolf.document_version_update_events.model.RevisionEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.annotation.Profile;
 import org.springframework.jms.annotation.JmsListener;
 import org.springframework.jms.support.JmsHeaders;
 import org.springframework.messaging.handler.annotation.Header;
 import org.springframework.stereotype.Service;
 
 @Service
+@Profile("!aws")
 public class DocumentEventConsumer {
 
     private static final Logger log = LoggerFactory.getLogger(DocumentEventConsumer.class);

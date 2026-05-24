@@ -1,5 +1,6 @@
 package com.ryanwoolf.document_version_update_events.demo;
 
+import com.ryanwoolf.document_version_update_events.messaging.RevisionEventPublisher;
 import com.ryanwoolf.document_version_update_events.model.RevisionDocumentData;
 import com.ryanwoolf.document_version_update_events.model.RevisionEvent;
 import com.ryanwoolf.document_version_update_events.model.RevisionEventType;
@@ -8,7 +9,7 @@ import com.ryanwoolf.document_version_update_events.repository.PendingDocumentRe
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.jms.core.JmsTemplate;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -24,6 +25,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ThreadLocalRandom;
 
 @Service
+@ConditionalOnProperty(name = "app.demo.endpoints.enabled", havingValue = "true")
 public class DemoRevisionEventProducer {
 
     private static final Logger log = LoggerFactory.getLogger(DemoRevisionEventProducer.class);
@@ -39,22 +41,19 @@ public class DemoRevisionEventProducer {
      */
     private static final String DOC_STUCK_MISSING_REVISION = "doc-stuck-missing-revision-001";
 
-    private final JmsTemplate jmsTemplate;
-    private final String revisionEventsDestination;
+    private final RevisionEventPublisher revisionEventPublisher;
     private final String demoRetryVerificationEventIdPrefix;
     private final DocumentRepository documentRepository;
     private final PendingDocumentRevisionRepository pendingDocumentRevisionRepository;
     private final ExecutorService demoExecutorService;
 
     public DemoRevisionEventProducer(
-            JmsTemplate jmsTemplate,
-            @Value("${app.jms.revision-events-destination}") String revisionEventsDestination,
+            RevisionEventPublisher revisionEventPublisher,
             @Value("${app.demo.retry-verification.event-id-prefix:retry-verify-}") String demoRetryVerificationEventIdPrefix,
             DocumentRepository documentRepository,
             PendingDocumentRevisionRepository pendingDocumentRevisionRepository,
             ExecutorService demoExecutorService) {
-        this.jmsTemplate = jmsTemplate;
-        this.revisionEventsDestination = revisionEventsDestination;
+        this.revisionEventPublisher = revisionEventPublisher;
         this.demoRetryVerificationEventIdPrefix = demoRetryVerificationEventIdPrefix;
         this.documentRepository = documentRepository;
         this.pendingDocumentRevisionRepository = pendingDocumentRevisionRepository;
@@ -80,9 +79,8 @@ public class DemoRevisionEventProducer {
         demoExecutorService.submit(() -> publishEvents(productionLikeOrder));
 
         log.info(
-                "Demo revision event run scheduled with {} events (publishing to JMS destination={})",
-                productionLikeOrder.size(),
-                revisionEventsDestination);
+                "Demo revision event run scheduled with {} events (publishing to revision queue)",
+                productionLikeOrder.size());
         return productionLikeOrder.size();
     }
 
@@ -91,10 +89,9 @@ public class DemoRevisionEventProducer {
      * for the stuck demo document {@link #DOC_STUCK_MISSING_REVISION}.
      */
     public void publishOne(RevisionEvent revisionEvent) {
-        jmsTemplate.convertAndSend(revisionEventsDestination, revisionEvent);
+        revisionEventPublisher.publish(revisionEvent);
         log.info(
-                "Published single revision event to destination={} documentId={} sequence={} eventId={}",
-                revisionEventsDestination,
+                "Published single revision event documentId={} sequence={} eventId={}",
                 revisionEvent.documentId(),
                 revisionEvent.sequence(),
                 revisionEvent.eventId());
@@ -128,13 +125,10 @@ public class DemoRevisionEventProducer {
 
     private void publishEvents(List<RevisionEvent> events) {
         for (RevisionEvent event : events) {
-            jmsTemplate.convertAndSend(revisionEventsDestination, event);
+            revisionEventPublisher.publish(event);
             sleepRandomly();
         }
-        log.info(
-                "Demo revision event run completed ({} messages sent to {})",
-                events.size(),
-                revisionEventsDestination);
+        log.info("Demo revision event run completed ({} messages sent)", events.size());
     }
 
     private List<RevisionEvent> generateDocumentEvents(String documentId, int count) {

@@ -1,0 +1,55 @@
+{
+  "family": "document-version-update-events",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::ACCOUNT_ID:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::ACCOUNT_ID:role/document-version-update-events-task",
+  "containerDefinitions": [
+    {
+      "name": "app",
+      "image": "ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/document-version-update-events:latest",
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 3030,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        { "name": "SPRING_PROFILES_ACTIVE", "value": "aws" },
+        { "name": "SERVER_PORT", "value": "3030" },
+        { "name": "AWS_REGION", "value": "REGION" },
+        { "name": "DB_HOST", "value": "REPLACE_RDS_ENDPOINT" },
+        { "name": "DB_PORT", "value": "5432" },
+        { "name": "DB_NAME", "value": "postgres" },
+        { "name": "DB_USERNAME", "value": "postgres" },
+        { "name": "DB_SCHEMA", "value": "lexis-nexis-events" },
+        { "name": "AWS_SQS_REVISION_EVENTS_QUEUE_URL", "value": "REPLACE_QUEUE_URL" },
+        { "name": "APP_DEMO_ENDPOINTS_ENABLED", "value": "false" }
+      ],
+      "secrets": [
+        {
+          "name": "DB_PASSWORD",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:document-version-update-events/db-password"
+        }
+      ],
+      "healthCheck": {
+        "command": ["CMD-SHELL", "wget -q -O- http://localhost:3030/actuator/health/liveness || exit 1"],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 120
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/document-version-update-events",
+          "awslogs-region": "REGION",
+          "awslogs-stream-prefix": "app"
+        }
+      }
+    }
+  ]
+}

@@ -4,7 +4,7 @@
 
 Spring Boot service that consumes legal-document revision events from a message broker, applies them in per-document sequence order, and exposes document search over PostgreSQL full-text search.
 
-The vetting spec targets **at-least-once**, **non-FIFO** brokers (e.g. **Amazon SQS standard**): short-window reordering, duplicate `event_id`, multi-instance consumers, and hot-document bursts. This prototype uses **ActiveMQ + JMS** locally to mimic that; the section **Deploy on AWS with Amazon SQS** below outlines wiring to a **pre-existing SQS standard queue**.
+The vetting spec targets **at-least-once**, **non-FIFO** brokers (e.g. **Amazon SQS standard**): short-window reordering, duplicate `event_id`, multi-instance consumers, and hot-document bursts. **Local/docker** use **ActiveMQ + JMS**; the **`aws`** profile uses **RDS PostgreSQL** and an **existing SQS standard queue** — see **[Deploy on AWS](#deploy-on-aws)**.
 
 ## Prerequisites
 
@@ -21,6 +21,7 @@ Runtime configuration lives under `src/main/resources/` only (there is no root `
 |------|---------|
 | [`application.properties`](src/main/resources/application.properties) | Default profile — local Postgres on port **5432**, ActiveMQ on **61616**, HTTP port **3030** |
 | [`application-docker.properties`](src/main/resources/application-docker.properties) | `docker` profile — Postgres on host port **5433**, ActiveMQ on host port **61617** |
+| [`application-aws.properties`](src/main/resources/application-aws.properties) | `aws` profile — **RDS** via env vars, **SQS** consumer, demo endpoints off by default |
 
 Schema migrations run automatically on startup via **Flyway** (`lexis-nexis-events` schema).
 
@@ -33,6 +34,24 @@ Schema migrations run automatically on startup via **Flyway** (`lexis-nexis-even
 | `DOCKER_DB_PASSWORD` | docker | `postgres` | Postgres password when using `docker` profile |
 | `DOCKER_ACTIVEMQ_PASSWORD` | docker | `admin` | ActiveMQ password when using `docker` profile |
 | `SERVER_PORT` | any | `3030` | HTTP port (set per instance in Compose) |
+
+### Environment variables (`aws` profile)
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `DB_HOST` | yes | RDS endpoint hostname |
+| `DB_USERNAME` | yes | Database user |
+| `DB_PASSWORD` | yes | Database password |
+| `AWS_REGION` | yes | AWS region (SQS + SDK) |
+| `AWS_SQS_REVISION_EVENTS_QUEUE_URL` | yes | Standard queue URL |
+| `DB_PORT` | no | Default `5432` |
+| `DB_NAME` | no | Default `postgres` |
+| `DB_SCHEMA` | no | Default `lexis-nexis-events` |
+| `DB_JDBC_PARAMS` | no | Default `&sslmode=require` for RDS |
+| `APP_DEMO_ENDPOINTS_ENABLED` | no | Default `false` on AWS |
+| `SERVER_PORT` | no | Default `3030` |
+
+Full ECS example: [`deploy/aws/env.example`](deploy/aws/env.example).
 
 ---
 
@@ -193,82 +212,31 @@ curl "http://localhost:3030/document/doc-hot-001"
 
 ---
 
-## Deploy on AWS with Amazon SQS (outline)
+## Deploy on AWS
 
-This repo is **not** wired for SQS today—it uses **ActiveMQ + JMS**. The **technical vetting spec** describes production-like delivery: **at-least-once**, **no strict ordering** (think **Amazon SQS standard queue** or Pub/Sub in default mode), short-window **reordering per document**, duplicates on recovery, and **hot-document bursts**. The implementation here (pending buffer, sequence application order, `event_id` idempotency, per-document stripes, competing consumers) is aimed at that model.
+The **`aws`** Spring profile connects to **RDS PostgreSQL** and consumes an **existing SQS standard queue** (not FIFO). ActiveMQ is disabled; JMS beans load only when `aws` is **not** active.
 
-For AWS, assume the **standard queue already exists** (platform team, Terraform, etc.). This service only needs **IAM**, configuration (**queue URL** or identifier + region), and the code changes below—**not** FIFO queues: ordering stays **application-defined**, not broker-defined.
+| Piece | Service | Notes |
+|-------|---------|--------|
+| API + consumers | **ECS Fargate** (≥ 2 tasks) | Same JVM: HTTP + `@SqsListener` |
+| Database | **RDS PostgreSQL** | Flyway on startup; schema `lexis-nexis-events` |
+| Messaging | **SQS standard queue** | Set `AWS_SQS_REVISION_EVENTS_QUEUE_URL` |
+| Image | **ECR** | Build with root [`Dockerfile`](Dockerfile) |
+| Health | **Actuator** | `/actuator/health` for ALB / ECS |
 
-### Message shape (spec vs this repo)
+**Code paths:** [`DocumentEventSqsConsumer`](src/main/java/com/ryanwoolf/document_version_update_events/consumer/DocumentEventSqsConsumer.java) (`aws`), [`DocumentEventConsumer`](src/main/java/com/ryanwoolf/document_version_update_events/consumer/DocumentEventConsumer.java) (`!aws`), shared [`RevisionEventHandler`](src/main/java/com/ryanwoolf/document_version_update_events/consumer/RevisionEventHandler.java).
 
-[`RevisionEvent`](src/main/java/com/ryanwoolf/document_version_update_events/model/RevisionEvent.java) uses **`@JsonProperty`** so JMS/SQS JSON matches the spec’s **snake_case** wire names; **`event_type`** is **`CREATE`** | **`UPDATE`**, and **`DocumentRevisionService`** rejects mismatches (e.g. **UPDATE** as the first revision). For SQS, use the same Jackson setup when deserializing the message body.
+**Steps:** see [`deploy/aws/README.md`](deploy/aws/README.md). Set `SPRING_PROFILES_ACTIVE=aws` and env vars from [`deploy/aws/env.example`](deploy/aws/env.example).
 
-### AWS architecture (example)
+**Verify:**
 
-| Piece | AWS service (example) | Role |
-|-------|------------------------|------|
-| API + queue workers | **ECS on Fargate** (desired count ≥ 2) or **App Runner** with steady capacity | HTTP + **long-polling** SQS workers in the same JVM (mirrors multi-instance ActiveMQ consumers) |
-| PostgreSQL | **RDS for PostgreSQL** (private subnets) | Same Flyway migrations and schema as today |
-| Revision queue | **Existing Amazon SQS standard queue** | Competing consumers; **no FIFO**, no reliance on `MessageGroupId` for correctness |
-| Secrets | **Secrets Manager** or **SSM Parameter Store** | DB password; queue URL if treated as secret |
-| Container image | **ECR** | Same `Dockerfile` after SQS code path is added |
-| Networking | **VPC** + private tasks/RDS; **NAT** or **VPC endpoints** for SQS/API | Security group: tasks → RDS **5432**; HTTPS to SQS |
+```bash
+aws sqs send-message --queue-url "$AWS_SQS_REVISION_EVENTS_QUEUE_URL" \
+  --message-body '{"event_id":"evt-1","document_id":"doc-aws-001","sequence":1,"event_type":"CREATE","timestamp":"2026-05-19T12:00:00Z","payload":{"title":"AWS","body":"test"}}'
+curl "https://YOUR-ALB/document/doc-aws-001"
+```
 
-**IAM (task role)** — on the **existing queue ARN**: `sqs:ReceiveMessage`, `sqs:DeleteMessage`, `sqs:GetQueueAttributes`, `sqs:ChangeMessageVisibility`; plus `kms:Decrypt` if the queue uses SSE-KMS. Publishers (upstream) use `sqs:SendMessage`.
-
-### SQS standard queue vs current JMS
-
-| Topic | ActiveMQ (today) | SQS standard (target) |
-|-------|------------------|-------------------------|
-| Delivery | At-least-once typical | **At-least-once** — duplicates and retries match spec; **`event_id`** idempotency must hold |
-| Ordering | Competing consumers; app buffers gaps | **Best-effort / arbitrary interleaving** — same as spec; **no FIFO queue** |
-| Ack | JMS transacted session | **DeleteMessage** after successful handling; failures leave message invisible until visibility timeout; **DLQ** + max receive count for poison pills |
-| Long poll | Broker push | Queue attribute **`ReceiveMessageWaitTimeSeconds`** (e.g. 20s) |
-
-Tune **visibility timeout** above worst-case handling for one full listener attempt (no extra in-process retries after `RevisionEventHandler` throws).
-
-### Application code changes (checklist)
-
-1. **Dependencies (Maven)**  
-   - Remove **`spring-boot-starter-activemq`** from the `aws` profile (or gated dependency), or keep it only for **`docker`** / local dev.  
-   - Add **Spring Cloud AWS** **`spring-cloud-aws-starter-sqs`** (or AWS SDK v2 + a small listener wrapper), with a BOM version **verified** against Spring Boot **4.x**.
-
-2. **Configuration**  
-   - Add profile **`aws`** (or `prod`): **`spring.cloud.aws.sqs`**, queue name or URL supplied by env/SSM (value from **already-provisioned** queue).  
-   - Keep **`docker`** + ActiveMQ for Compose until you adopt **LocalStack** SQS locally.
-
-3. **Consumer**  
-   - Replace [`DocumentEventConsumer`](src/main/java/com/ryanwoolf/document_version_update_events/consumer/DocumentEventConsumer.java): **`@JmsListener`** → **`@SqsListener`**.  
-   - Deserialize body to **`RevisionEvent`** with **snake_case**-compatible Jackson; branch **CREATE** vs **UPDATE** in [`DocumentRevisionService`](src/main/java/com/ryanwoolf/document_version_update_events/service/DocumentRevisionService.java) per spec.  
-   - Keep **[`DocumentProcessingStripes`](src/main/java/com/ryanwoolf/document_version_update_events/config/DocumentProcessingStripes.java)** + [`RevisionEventHandler`](src/main/java/com/ryanwoolf/document_version_update_events/consumer/RevisionEventHandler.java).  
-   - On failure, do **not** ack valid poison messages indefinitely — rely on **redrive** to DLQ after **maxReceiveCount**.
-
-4. **Producer (demo / tests only)**  
-   - Replace **`JmsTemplate`** in [`DemoRevisionEventProducer`](src/main/java/com/ryanwoolf/document_version_update_events/demo/DemoRevisionEventProducer.java) with **`SqsTemplate`** / **`SqsAsyncClient`**: **standard** `SendMessage`, body = spec-shaped JSON (**no** `MessageGroupId` / **no** FIFO name).
-
-5. **Remove ActiveMQ-only beans** from the `aws` profile — [`JmsConfig`](src/main/java/com/ryanwoolf/document_version_update_events/config/JmsConfig.java) (`MappingJackson2MessageConverter`, `DefaultJmsListenerContainerFactory`).
-
-6. **Retries / visibility** — Align **visibility timeout** and **SQS receive attempts** so repeated failures eventually land in **DLQ** for inspection (handler does not swallow exceptions).
-
-7. **Local dev** — Optional **LocalStack** SQS + `aws` profile; or keep **ActiveMQ** + `docker` profile for parity with current Compose.
-
-8. **Tests** — Mock SQS or **LocalStack** Testcontainers so CI stays offline.
-
-9. **Observability** — CloudWatch metrics (queue depth, age of oldest message), structured logs with **`document_id`** / **`event_id`**.
-
-### AWS setup (queue assumed to exist)
-
-1. **VPC + RDS** — Same as any ECS/RDS pattern; DB in private subnets, credentials in Secrets Manager.  
-2. **SQS** — Use the **provided standard queue URL** (and optional **DLQ** + redrive policy configured by platform). Do **not** require FIFO for this spec.  
-3. **ECR + ECS Fargate** — Task role grants SQS permissions on that queue; pass **`QUEUE_URL`**, **`AWS_REGION`**, JDBC settings, **`SPRING_PROFILES_ACTIVE=aws`**.  
-4. **ALB** — Target HTTP port for `GET /document/...` and search.  
-5. **Production** — Lock down **`POST /demo/...`**.
-
-### Verification
-
-- Enqueue spec-shaped messages (AWS CLI `send-message` or upstream system) and confirm **multiple ECS tasks** consume and **`GET`**/search reflect applied state.  
-- Validate **idempotency** (duplicate `event_id`) and **out-of-order** sequences under load.  
-- Monitor **ApproximateAgeOfOldestMessage** and DLQ depth.
+Tune SQS **visibility timeout** and use a **DLQ** for poison messages. Demo HTTP is off by default (`APP_DEMO_ENDPOINTS_ENABLED=false`).
 
 ---
 
@@ -282,6 +250,9 @@ Tune **visibility timeout** above worst-case handling for one full listener atte
 | Flyway / schema errors on restart | `docker compose down -v` to reset the Postgres volume, then `up --build` again |
 | ActiveMQ connection refused | Wait for `activemq` to finish starting, or check `docker compose logs activemq` |
 | ShedLock / scheduler errors | Ensure Flyway migration `V2__shedlock.sql` has run in schema `lexis-nexis-events` |
+| ECS task cannot reach RDS | Security group: allow **5432** from task SG to RDS; check `DB_HOST` and `DB_JDBC_PARAMS` (`sslmode=require` for RDS) |
+| SQS messages not consumed | Task role SQS permissions; `AWS_SQS_REVISION_EVENTS_QUEUE_URL`; NAT or VPC endpoint for SQS from private subnets |
+| `@SqsListener` + DevTools | Do not enable devtools on AWS images (known classloader issue with SQS listeners) |
 | Docker build: `wget: bad address 'repo.maven.apache.org'` | The `Dockerfile` uses the official Maven image so the wrapper does not download Maven inside Alpine. If dependency download still fails, fix Docker DNS (e.g. Docker Desktop → Settings → Docker Engine: `"dns": ["8.8.8.8","8.8.4.4"]`) or check VPN/firewall |
 
 ---

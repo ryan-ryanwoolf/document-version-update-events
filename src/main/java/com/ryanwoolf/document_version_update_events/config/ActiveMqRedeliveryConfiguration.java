@@ -8,6 +8,7 @@ import org.springframework.beans.factory.config.BeanPostProcessor;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Profile;
 import org.springframework.jms.connection.CachingConnectionFactory;
 
 /**
@@ -16,6 +17,7 @@ import org.springframework.jms.connection.CachingConnectionFactory;
  * Production analogue: SQS visibility timeout backoff (configure on the queue), not application code.
  */
 @Configuration
+@Profile("!aws")
 @ConditionalOnClass(ActiveMQConnectionFactory.class)
 public class ActiveMqRedeliveryConfiguration {
 

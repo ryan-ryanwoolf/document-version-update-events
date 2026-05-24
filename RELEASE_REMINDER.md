@@ -25,6 +25,21 @@ mvn flyway:baseline -Dflyway.schemas=lexis-nexis-events
 
 Or drop and recreate the schema in non-production environments.
 
-## JMS queue
+## JMS queue (local / docker profiles)
 
 Revision events are consumed from an ActiveMQ **queue** named `document.revision.events` (`app.jms.revision-events-destination`). The queue is created on first use. Do not switch to a topic for multi-instance deployments unless every instance is intended to receive every message.
+
+## AWS profile (`spring.profiles.active=aws`)
+
+Deploy checklist:
+
+| Item | Action |
+|------|--------|
+| **RDS** | Provision PostgreSQL; set `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USERNAME`, `DB_PASSWORD`, `DB_SCHEMA` (default `lexis-nexis-events`). Default JDBC params include `sslmode=require` via `DB_JDBC_PARAMS` override if needed. |
+| **Flyway** | Runs on startup; ensure task can reach RDS before scaling out many tasks. |
+| **SQS** | Set `AWS_SQS_REVISION_EVENTS_QUEUE_URL` to the **standard** queue URL. Tune visibility timeout and DLQ on the queue. |
+| **IAM** | Task role: SQS receive/delete/change visibility on queue ARN. |
+| **ECS** | `SPRING_PROFILES_ACTIVE=aws`, image from ECR, health check `/actuator/health`, desired count ≥ 2. |
+| **Demo** | `APP_DEMO_ENDPOINTS_ENABLED` defaults to **false** — keep off in production. |
+
+See [`deploy/aws/README.md`](deploy/aws/README.md) and [`deploy/aws/env.example`](deploy/aws/env.example).

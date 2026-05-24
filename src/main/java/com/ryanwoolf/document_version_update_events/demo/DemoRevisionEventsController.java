@@ -3,6 +3,7 @@ package com.ryanwoolf.document_version_update_events.demo;
 import com.ryanwoolf.document_version_update_events.model.RevisionEvent;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.validation.annotation.Validated;
@@ -16,6 +17,7 @@ import java.util.Map;
 @RestController
 @RequestMapping("/demo/revision-events")
 @Validated
+@ConditionalOnProperty(name = "app.demo.endpoints.enabled", havingValue = "true")
 public class DemoRevisionEventsController {
 
     private final DemoRevisionEventProducer demoRevisionEventProducer;
